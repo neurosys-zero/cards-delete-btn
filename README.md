@@ -10,11 +10,15 @@ Thunderbird's Cards View (the modern card-style message list) has no quick-delet
 
 ## Features
 
-- 🗑 Trash icon appears on every card in Cards View
+- 🗑 Trash icon appears on every card in Cards View (hover-revealed; hidden until you mouse over the card)
 - Click it to instantly move that message to Trash
-- Works on any card regardless of which one is currently selected
+- Works on any card regardless of which one is currently selected — your selection is preserved
 - Gray by default, turns red on hover
-- Deletions register with Thunderbird's undo manager — press `Ctrl+Z` to restore a misclick
+- Deletions go through Thunderbird's native delete command, so `Ctrl+Z` undoes them wherever Thunderbird itself supports undo (see Limitations)
+
+## Limitations
+
+- **Undo depends on the folder backend.** This add-on triggers Thunderbird's standard delete command, which registers undo for folders TB handles natively (local folders, plain IMAP, etc.). Folders served by other add-ons that override delete handling — notably **Owl for Exchange** / EWS — may not produce an undo entry, because the deletion is performed server-side outside TB's transaction manager. In that case `Ctrl+Z` will be greyed out, exactly as it is when pressing the Delete key normally in those folders.
 
 ## Requirements
 

@@ -63,7 +63,7 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
 
       // gDBView is briefly unavailable while a folder is loading. Retry a
       // couple of times so a click during folder switch is not silently
-      // dropped (the original failure mode the README flagged).
+      // dropped.
       const view = innerWin.gDBView;
       if (!view) {
         if (attempt < 2) {
@@ -75,23 +75,77 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
         return;
       }
 
-      const msgHdr = view.getMsgHdrAt(rowIndex);
-      if (!msgHdr) {
+      const sel = view.selection;
+      if (!sel) {
         return;
       }
 
-      // Pass msgWindow so the deletion is recorded by Thunderbird's undo manager
-      const topWin = innerWin.browsingContext?.top?.window ?? innerWin;
-      const msgWindow = topWin.msgWindow ?? null;
+      // Snapshot the current selection (in whichever shape this TB
+      // version exposes) so we can restore it after the delete — the
+      // whole point of this extension is to delete the clicked card
+      // without disturbing the user's selection.
+      let savedIndices = [];
+      if (Array.isArray(sel.selectedIndices)) {
+        savedIndices = [...sel.selectedIndices];
+      } else if (typeof sel.getRangeCount === "function") {
+        try {
+          const rc = sel.getRangeCount();
+          for (let i = 0; i < rc; i++) {
+            const min = {}, max = {};
+            sel.getRangeAt(i, min, max);
+            for (let j = min.value; j <= max.value; j++) {
+              savedIndices.push(j);
+            }
+          }
+        } catch (_) { /* fall through with whatever we got */ }
+      }
+      const savedCurrent =
+        typeof sel.currentIndex === "number" ? sel.currentIndex : -1;
 
-      msgHdr.folder.deleteMessages(
-        [msgHdr],
-        msgWindow,
-        false, // deleteStorage — false = move to Trash
-        false, // isMove
-        null,  // copyListener
-        true   // allowUndo — registers with undo manager for Ctrl+Z support
-      );
+      // Suppress intermediate selection events so the UI doesn't flash
+      // the deleted row as selected before the restore.
+      const hasSuppression = "selectEventsSuppressed" in sel;
+      const wasSuppressed = hasSuppression ? sel.selectEventsSuppressed : false;
+      if (hasSuppression) sel.selectEventsSuppressed = true;
+
+      // Swap selection to just the target row, then run TB's own delete
+      // command. This routes the deletion (and the undo entry) through
+      // the exact code path that the Delete key uses, so cmd_undo /
+      // Ctrl+Z reads the right transaction manager.
+      try {
+        sel.select(rowIndex);
+        view.doCommand(Ci.nsMsgViewCommandType.deleteMsg);
+      } catch (e) {
+        innerWin.console?.error?.("[cards-delete-btn] doCommand failed:", e);
+        if (hasSuppression) sel.selectEventsSuppressed = wasSuppressed;
+        return;
+      }
+
+      // The view should now have row at rowIndex removed; everything
+      // below shifts up by one. Rebuild the previous selection with
+      // that shift, and skip the deleted row if it was part of it.
+      try {
+        sel.clearSelection();
+        for (const i of savedIndices) {
+          if (i === rowIndex) continue;
+          const adj = i > rowIndex ? i - 1 : i;
+          if (typeof sel.toggleSelectionAtIndex === "function") {
+            sel.toggleSelectionAtIndex(adj);
+          } else if (typeof sel.rangedSelect === "function") {
+            sel.rangedSelect(adj, adj, /* augment */ true);
+          }
+        }
+        if (savedCurrent >= 0 && savedCurrent !== rowIndex) {
+          sel.currentIndex =
+            savedCurrent > rowIndex ? savedCurrent - 1 : savedCurrent;
+        }
+      } catch (e) {
+        innerWin.console?.warn?.(
+          "[cards-delete-btn] selection restore failed:", e
+        );
+      }
+
+      if (hasSuppression) sel.selectEventsSuppressed = wasSuppressed;
     }
 
     // -------------------------------------------------------------------------
@@ -207,7 +261,6 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
       doc.querySelectorAll(".cards-delete-btn").forEach(b => b.remove());
       doc.querySelectorAll("[data-cdb-done]")
         .forEach(r => r.removeAttribute("data-cdb-done"));
-      innerWin.console?.log?.("[cards-delete-btn] 1.0.4 active");
 
       // The observer only needs to be bound once per window.
       const firstTime = !innerWin._cardsDeleteInjected;
