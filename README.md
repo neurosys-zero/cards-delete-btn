@@ -14,6 +14,7 @@ Thunderbird's Cards View (the modern card-style message list) has no quick-delet
 - Click it to instantly move that message to Trash
 - Works on any card regardless of which one is currently selected
 - Gray by default, turns red on hover
+- Deletions register with Thunderbird's undo manager — press `Ctrl+Z` to restore a misclick
 
 ## Requirements
 
@@ -32,7 +33,9 @@ Thunderbird's Cards View (the modern card-style message list) has no quick-delet
 
 ### Step 2 — Install the extension
 
-1. Download the latest `cards-delete-btn.xpi` from [Releases](../../releases)
+1. Download the right `.xpi` for your Thunderbird version from the repo root (or [Releases](../../releases)):
+   - **`cards-delete-btn-v25.xpi`** — for Thunderbird 115 – 127
+   - **`cards-delete-btn-v28.xpi`** — for Thunderbird 128 and later
 2. In Thunderbird: **Tools → Add-ons and Themes** (or `Ctrl+Shift+A`)
 3. Click the gear icon ⚙️ → **Install Add-on From File...**
 4. Select the downloaded `.xpi` file
@@ -55,7 +58,7 @@ The extension injects a button into each `[is='thread-card']` element inside Thu
 ## Building from source
 
 ```
-git clone https://github.com/YOUR_USERNAME/cards-delete-btn
+git clone https://github.com/abtecgh/cards-delete-btn
 cd cards-delete-btn
 zip -r cards-delete-btn.xpi manifest.json background.js api/
 ```

@@ -22,14 +22,16 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
     // Styles injected into about:3pane
     // -------------------------------------------------------------------------
 
+    // Visibility (show on hover) is handled in JS via inline styles so it
+    // can't be defeated by anything in TB's CSS cascade. The rules here
+    // are purely visual.
     const BUTTON_CSS = `
       .cards-delete-btn {
         position: absolute;
         right: 80px;
-        bottom: 0;
-        width: 36px;
-        height: 36px;
-        display: inline-flex;
+        bottom: 8px;
+        width: 20px;
+        height: 20px;
         align-items: center;
         justify-content: center;
         background: transparent;
@@ -37,10 +39,9 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
         border-radius: 3px;
         cursor: pointer;
         color: #888;
-        font-size: 24px;
         line-height: 1;
         z-index: 100;
-        padding: 1px;
+        padding: 0;
         box-sizing: border-box;
       }
 
@@ -54,14 +55,23 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
     // Delete a specific message by its view index
     // -------------------------------------------------------------------------
 
-    function deleteMessage(row, innerWin) {
+    function deleteMessage(row, innerWin, attempt = 0) {
       const rowIndex = typeof row.index === "number" ? row.index : -1;
       if (rowIndex < 0) {
         return;
       }
 
+      // gDBView is briefly unavailable while a folder is loading. Retry a
+      // couple of times so a click during folder switch is not silently
+      // dropped (the original failure mode the README flagged).
       const view = innerWin.gDBView;
       if (!view) {
+        if (attempt < 2) {
+          innerWin.setTimeout(
+            () => deleteMessage(row, innerWin, attempt + 1),
+            attempt === 0 ? 200 : 500
+          );
+        }
         return;
       }
 
@@ -89,11 +99,6 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
     // -------------------------------------------------------------------------
 
     function attachButton(row, innerWin) {
-      if (row._cardsDeleteAttached) {
-        return;
-      }
-      row._cardsDeleteAttached = true;
-
       // The button is positioned absolutely inside .card-container, which
       // already has position:relative in Thunderbird's own stylesheet.
       const container = row.querySelector(".card-container") ?? row;
@@ -101,18 +106,65 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
         container.style.position = "relative";
       }
 
-      const btn = innerWin.document.createElement("button");
+      const doc = innerWin.document;
+      const btn = doc.createElement("button");
       btn.className = "cards-delete-btn";
-      btn.title = "Delete message";
-      btn.setAttribute("aria-label", "Delete message");
-      btn.textContent = "🗑";
+      btn.title = "Move to Trash (Ctrl+Z to undo)";
+      btn.setAttribute("aria-label", "Move to Trash");
 
-      // Use capture to intercept the click before the card's own click handler
-      // would change the selection.
-      btn.addEventListener("click", (event) => {
+      // Hidden by default — inline style so it overrides any CSS the
+      // cascade might apply.
+      btn.style.display = "none";
+
+      // Inline SVG trash icon. Uses stroke="currentColor" so the existing
+      // CSS color and hover rules continue to apply with no change.
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = doc.createElementNS(svgNS, "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("width", "14");
+      svg.setAttribute("height", "14");
+      svg.setAttribute("fill", "none");
+      svg.setAttribute("stroke", "currentColor");
+      svg.setAttribute("stroke-width", "2");
+      svg.setAttribute("stroke-linecap", "round");
+      svg.setAttribute("stroke-linejoin", "round");
+      svg.setAttribute("aria-hidden", "true");
+      const paths = [
+        ["polyline", { points: "3 6 5 6 21 6" }],
+        ["path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }],
+        ["path", { d: "M10 11v6" }],
+        ["path", { d: "M14 11v6" }],
+        ["path", { d: "M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" }],
+      ];
+      for (const [tag, attrs] of paths) {
+        const el = doc.createElementNS(svgNS, tag);
+        for (const [k, v] of Object.entries(attrs)) {
+          el.setAttribute(k, v);
+        }
+        svg.appendChild(el);
+      }
+      btn.appendChild(svg);
+
+      // Show on row hover / keyboard focus.
+      const show = () => { btn.style.display = "inline-flex"; };
+      const hide = () => { btn.style.display = "none"; };
+      row.addEventListener("mouseenter", show);
+      row.addEventListener("mouseleave", hide);
+      btn.addEventListener("focus", show);
+      btn.addEventListener("blur", hide);
+
+      // Capture-phase listeners intercept both mouse and keyboard activation
+      // before the card's own handler would change the selection.
+      const activate = (event) => {
         event.stopPropagation();
         event.preventDefault();
         deleteMessage(row, innerWin);
+      };
+      btn.addEventListener("click", activate, /* capture */ true);
+      btn.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          activate(event);
+        }
       }, /* capture */ true);
 
       container.appendChild(btn);
@@ -136,36 +188,55 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
     // -------------------------------------------------------------------------
 
     function injectInto3Pane(innerWin) {
-      if (!innerWin || innerWin._cardsDeleteInjected) {
+      if (!innerWin) {
         return;
       }
-      innerWin._cardsDeleteInjected = true;
-
       const doc = innerWin.document;
 
-      // Inject stylesheet once
-      if (!doc.getElementById("cards-delete-btn-css")) {
-        const style = doc.createElement("style");
-        style.id = "cards-delete-btn-css";
-        style.textContent = BUTTON_CSS;
-        (doc.head ?? doc.documentElement).appendChild(style);
-      }
+      // Always refresh the stylesheet so a reinstall (without restarting
+      // Thunderbird) picks up CSS changes from the new version.
+      doc.getElementById("cards-delete-btn-css")?.remove();
+      const style = doc.createElement("style");
+      style.id = "cards-delete-btn-css";
+      style.textContent = BUTTON_CSS;
+      (doc.head ?? doc.documentElement).appendChild(style);
 
-      // Process cards already in the DOM
+      // Wipe any buttons/markers left behind by a previous version of
+      // this extension so the new code can re-attach with up-to-date
+      // event handlers and styles.
+      doc.querySelectorAll(".cards-delete-btn").forEach(b => b.remove());
+      doc.querySelectorAll("[data-cdb-done]")
+        .forEach(r => r.removeAttribute("data-cdb-done"));
+      innerWin.console?.log?.("[cards-delete-btn] 1.0.4 active");
+
+      // The observer only needs to be bound once per window.
+      const firstTime = !innerWin._cardsDeleteInjected;
+      innerWin._cardsDeleteInjected = true;
+
+      // Process cards already in the DOM (always — we just cleared them).
       processCards(innerWin);
 
-      // Process cards added later (virtual list recycles rows while scrolling)
-      new innerWin.MutationObserver(() => processCards(innerWin))
-        .observe(doc.documentElement, { childList: true, subtree: true });
+      if (!firstTime) {
+        return;
+      }
 
-      // Short polling window to catch the initial render burst (~60 s)
-      let ticks = 0;
-      const timer = innerWin.setInterval(() => {
-        processCards(innerWin);
-        if (++ticks >= 100) {
-          innerWin.clearInterval(timer);
+      // Coalesce bursts of mutations (the virtual list churns nodes on
+      // every scroll) into one scan per frame.
+      let scanScheduled = false;
+      const scheduleScan = () => {
+        if (scanScheduled) {
+          return;
         }
-      }, 600);
+        scanScheduled = true;
+        innerWin.requestAnimationFrame(() => {
+          scanScheduled = false;
+          processCards(innerWin);
+        });
+      };
+
+      // Process cards added later (virtual list recycles rows while scrolling)
+      new innerWin.MutationObserver(scheduleScan)
+        .observe(doc.documentElement, { childList: true, subtree: true });
     }
 
     // -------------------------------------------------------------------------
@@ -173,11 +244,9 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
     // -------------------------------------------------------------------------
 
     function watchMailWindow(outerWin) {
-      if (!outerWin || outerWin._cardsDeleteWatching) {
+      if (!outerWin) {
         return;
       }
-      outerWin._cardsDeleteWatching = true;
-
       const doc = outerWin.document;
 
       function tryInject() {
@@ -193,24 +262,23 @@ this.cardsDelete = class extends ExtensionCommon.ExtensionAPI {
         });
       }
 
+      // Always re-scan so a reinstall refreshes the injected stylesheet.
       tryInject();
+
+      // Listeners only need to be bound once per window.
+      if (outerWin._cardsDeleteWatching) {
+        return;
+      }
+      outerWin._cardsDeleteWatching = true;
 
       // Re-try when new frames are added (e.g. new tab opened)
       new outerWin.MutationObserver(tryInject)
         .observe(doc.documentElement, { childList: true, subtree: true });
 
-      // Re-try when a tab is selected
+      // Re-try when a tab is selected — give the about:3pane frame a
+      // moment to attach before scanning.
       doc.getElementById("tabmail")
         ?.addEventListener("select", () => outerWin.setTimeout(tryInject, 300));
-
-      // Short polling window for the initial load
-      let ticks = 0;
-      const timer = outerWin.setInterval(() => {
-        tryInject();
-        if (++ticks >= 30) {
-          outerWin.clearInterval(timer);
-        }
-      }, 500);
     }
 
     // -------------------------------------------------------------------------
